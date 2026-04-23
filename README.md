@@ -8,10 +8,37 @@
 
 ## 🎯 ゴール
 
-- GitHub Copilot を使って、要件から **Azure アーキテクチャ設計図 (Mermaid)** を生成できる
+- GitHub Copilot を使って、要件から **Azure アーキテクチャ設計図 (Mermaid / draw.io)** を生成できる
 - 設計図をもとに **Bicep テンプレート** を Copilot と対話しながら作成できる
+- **Azure Verified Modules (AVM)** を使って、Microsoft が品質保証した公式モジュールで IaC を組み立てられる
 - GitHub Copilot Agent (Azure MCP) を活用して、**対話的に Azure へデプロイ** できる
 - 生成された IaC に対して **Azure Well-Architected Framework / Bicep ベストプラクティス** の観点でレビューできる
+
+---
+
+## 📦 Azure Verified Modules (AVM) とは
+
+本ハンズオンでは、後半で **Azure Verified Modules (AVM)** を使った IaC 実装も扱います。AVM を一言でいうと:
+
+> **Microsoft が「WAF に準拠している」と検証・保証した、再利用可能な公式 IaC モジュール群**
+
+より具体的には:
+
+- 🏅 **Microsoft 公式** — Azure プロダクトチームと FastTrack for Azure が共同で提供
+- 🧩 **Bicep / Terraform 両対応** — 同じ思想でマルチ IaC 言語をカバー
+- ✅ **WAF に準拠** — 信頼性 / セキュリティ / 運用性のデフォルトが "安全側" に倒されている
+- 🔁 **バージョン管理された公開レジストリで配布** — Bicep は `br/public:avm/res/...`、Terraform は Terraform Registry
+- 🧪 **自動テスト済み** — PSRule for Azure などによる静的解析と CI が走っている
+
+ゼロから自作する Bicep と比べて、**セキュリティのデフォルト値・diagnosticSettings・Managed Identity・RBAC** といった「毎回書くけれど間違えやすい部分」を大幅に省略でき、**レビューコストが下がる** のが最大のメリットです。
+
+公式情報:
+
+- 📘 [Azure Verified Modules (公式サイト)](https://azure.github.io/Azure-Verified-Modules/)
+- 📘 [Bicep Public Module Registry](https://github.com/Azure/bicep-registry-modules/tree/main/avm)
+- 📘 [Terraform AVM Modules](https://registry.terraform.io/namespaces/Azure)
+
+ハンズオン内では **"自作 Bicep" と "AVM ベース" の両方** を提示し、実務での使い分け判断ができるようになることを目指します。
 
 ---
 
@@ -79,18 +106,24 @@ az account set --subscription "<YOUR_SUBSCRIPTION_ID>"
 │   └── 04-bestpractices.md    # Step4: 解説
 ├── prompts/
 │   ├── 01-design.prompt.md    # 設計図生成用サンプルプロンプト
-│   ├── 02-bicep.prompt.md     # Bicep 生成用サンプルプロンプト
+│   ├── 02-bicep.prompt.md     # Bicep 生成用サンプルプロンプト (自作 & AVM 両対応)
 │   └── 03-review.prompt.md    # レビュー用サンプルプロンプト
 └── sample/                    # 完成版サンプル (答え合わせ用)
-    ├── main.bicep
-    ├── main.bicepparam
-    └── modules/
-        ├── appservice.bicep
-        ├── sql.bicep
-        ├── keyvault.bicep
-        ├── monitoring.bicep
-        └── storage.bicep
+    ├── main.bicep             # Track A: 自作モジュール版
+    ├── main.dev.bicepparam
+    ├── main.prod.bicepparam
+    ├── modules/               # 自作モジュール
+    │   ├── appservice.bicep
+    │   ├── sql.bicep
+    │   ├── keyvault.bicep
+    │   ├── monitoring.bicep
+    │   └── storage.bicep
+    └── avm/                   # Track B: Azure Verified Modules 版
+        ├── main.bicep
+        └── main.dev.bicepparam
 ```
+
+> 🧭 **2 つのトラック**: `modules/` は「まず仕組みを理解する」ための自作版、`avm/` は「実務でそのまま使える」公式モジュール版です。両方を見比べることで、AVM の威力が実感できます。
 
 ---
 
