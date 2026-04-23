@@ -18,12 +18,6 @@ param location string = resourceGroup().location
 @maxLength(10)
 param workloadName string = 'web'
 
-@description('Entra ID (Azure AD) login name used as SQL Server administrator (UPN or group name).')
-param sqlAdminLoginName string
-
-@description('Object ID of the Entra ID principal (user/group) that becomes SQL Server administrator.')
-param sqlAdminObjectId string
-
 // =========================
 // Variables
 // =========================
@@ -39,31 +33,10 @@ var tags = {
 }
 
 var appServicePlanSku = isProd ? 'P1v3' : 'B1'
-var enableKeyVaultPurgeProtection = isProd
 
 // =========================
 // Modules
 // =========================
-module monitoring 'modules/monitoring.bicep' = {
-  name: 'monitoring'
-  params: {
-    location: location
-    tags: tags
-    namePrefix: namePrefix
-  }
-}
-
-module keyvault 'modules/keyvault.bicep' = {
-  name: 'keyvault'
-  params: {
-    location: location
-    tags: tags
-    namePrefix: namePrefix
-    uniqueSuffix: uniqueSuffix
-    enablePurgeProtection: enableKeyVaultPurgeProtection
-  }
-}
-
 module storage 'modules/storage.bicep' = {
   name: 'storage'
   params: {
@@ -71,18 +44,6 @@ module storage 'modules/storage.bicep' = {
     tags: tags
     namePrefix: namePrefix
     uniqueSuffix: uniqueSuffix
-  }
-}
-
-module sql 'modules/sql.bicep' = {
-  name: 'sql'
-  params: {
-    location: location
-    tags: tags
-    namePrefix: namePrefix
-    uniqueSuffix: uniqueSuffix
-    sqlAdminLoginName: sqlAdminLoginName
-    sqlAdminObjectId: sqlAdminObjectId
   }
 }
 
@@ -94,13 +55,8 @@ module appservice 'modules/appservice.bicep' = {
     namePrefix: namePrefix
     uniqueSuffix: uniqueSuffix
     skuName: appServicePlanSku
-    keyVaultName: keyvault.outputs.keyVaultName
-    keyVaultUri: keyvault.outputs.keyVaultUri
     storageAccountName: storage.outputs.storageAccountName
     storageBlobEndpoint: storage.outputs.blobEndpoint
-    sqlServerFqdn: sql.outputs.sqlServerFqdn
-    sqlDatabaseName: sql.outputs.databaseName
-    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
   }
 }
 
@@ -108,7 +64,5 @@ module appservice 'modules/appservice.bicep' = {
 // Outputs
 // =========================
 output appServiceHostName string = appservice.outputs.appServiceDefaultHostName
-output keyVaultName string = keyvault.outputs.keyVaultName
-output keyVaultUri string = keyvault.outputs.keyVaultUri
-output sqlServerFqdn string = sql.outputs.sqlServerFqdn
-output appInsightsName string = monitoring.outputs.appInsightsName
+output storageAccountName string = storage.outputs.storageAccountName
+output blobEndpoint string = storage.outputs.blobEndpoint
