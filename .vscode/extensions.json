@@ -3,6 +3,7 @@
     "GitHub.copilot",
     "GitHub.copilot-chat",
     "ms-azuretools.vscode-bicep",
-    "ms-vscode.vscode-node-azure-pack"
+    "ms-vscode.vscode-node-azure-pack",
+    "hediet.vscode-drawio"
   ]
 }
