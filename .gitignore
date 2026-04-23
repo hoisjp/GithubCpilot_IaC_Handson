@@ -1,0 +1,17 @@
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# Bicep
+*.bicep.json
+
+# Azure
+.azure/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*~
