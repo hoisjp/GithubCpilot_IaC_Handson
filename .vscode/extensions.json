@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "GitHub.copilot",
+    "GitHub.copilot-chat",
+    "ms-azuretools.vscode-bicep",
+    "ms-vscode.vscode-node-azure-pack"
+  ]
+}
