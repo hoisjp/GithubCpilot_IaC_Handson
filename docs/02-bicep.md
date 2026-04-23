@@ -1,352 +1,275 @@
-# Step 2: 設計図をもとに Bicep ファイルを作る
+# Step 2: 設計図を貼り付けて一気に Bicep を生成する手順
 
-Step 1 で生成したアーキテクチャ図を GitHub Copilot に渡し、**Bicep テンプレート** に落としていきます。
+01-design.md で作成した Mermaid / draw.io の設計図を Copilot に貼り付け、設計どおりに一気に `bicep` ファイル群を生成するための簡潔な手順です。
+
+> 本ハンズオンの構成は **App Service + Blob Storage** のみ。両者の接続は **Managed Identity (System Assigned) + RBAC** によるパスワードレスを採用します。
 
 ---
 
 ## 🎯 このステップのゴール
 
-- 設計図 → Bicep への変換を Copilot で行える
-- **モジュール分割** された保守性の高い Bicep を作れる
-- `.bicepparam` を使って環境ごとのパラメータを分離できる
-- Bicep linter の指摘を Copilot と一緒に潰せる
-- **Azure Verified Modules (AVM)** を使った実装との違いを理解できる
+- `docs/architecture.md` の Mermaid を Copilot に渡して、`demoBicep/` 以下に Bicep 一式を一気に生成する
+- 生成物を `az bicep build` と `az deployment group what-if` ですぐ検証できる形にする
 
 ---
 
-## 0. 2 つのトラック — 自作モジュール vs Azure Verified Modules
+## 手順（最短ルート — 一気に生成）
 
-本ステップでは、同じ設計を **2 通りの方法** で Bicep に落とします。
+1. `docs/architecture.md` を開き、Mermaid ブロックをコピーする。
+2. GitHub Copilot Chat を **Agent モード** で開き、以下のプロンプトに Mermaid を差し込んで実行する。
 
-| | Track A: 自作モジュール | Track B: Azure Verified Modules (AVM) |
-|---|---|---|
-| 方針 | すべて自分で `resource` を書く | 公式モジュールを `br/public:avm/res/...` で呼び出す |
-| 学習効果 | リソースの構造が深く理解できる | 実務パターン・ベストプラクティスに触れられる |
-| コード量 | 多い (1 モジュール 30〜80 行) | 少ない (モジュール呼出 10〜20 行) |
-| セキュリティ既定値 | 自分で正しく設定する必要あり | **Microsoft が検証済みの安全側デフォルト** |
-| 向いている場面 | 学習 / 特殊要件で AVM が使えない時 | **ほとんどの実案件** |
+プロンプト（そのまま貼って実行）:
 
-> 💡 **推奨ルート**: まず **Track A** を一通り作って原理を掴んでから、**Track B** で「AVM ならどれだけシンプルになるか」を体験してください。
+````text
+以下のアーキテクチャ図に沿って、Resource Group スコープの Bicep 一式を
+`demoBicep/` フォルダに新規作成してください。
 
-サンプル実装はどちらも [`sample/`](../sample/) に置いています。
-
-- Track A: [`sample/main.bicep`](../sample/main.bicep) + [`sample/modules/`](../sample/modules/)
-- Track B: [`sample/avm/main.bicep`](../sample/avm/main.bicep)
-
----
-
-## 1. 完成イメージ
-
-最終的に以下の構成を目指します。
-
-```
-bicep/
-├── main.bicep                # エントリーポイント (サブスクリプション or リソースグループ スコープ)
-├── main.dev.bicepparam       # dev 用パラメータ
-├── main.prod.bicepparam      # prod 用パラメータ
-└── modules/
-    ├── appservice.bicep      # App Service + Plan
-    ├── sql.bicep             # SQL Server + DB (Entra ID 認証)
-    ├── keyvault.bicep        # Key Vault (RBAC mode)
-    ├── monitoring.bicep      # Log Analytics + App Insights
-    └── storage.bicep         # Storage Account
+# 設計図
+```mermaid
+<docs/architecture.md からコピーした Mermaid を貼る>
 ```
 
-参考実装は [`sample/`](../sample/) に置いてあります (答え合わせ用)。
-
----
-
-## 2. プロンプトの進め方 — 「一気に」ではなく「段階的に」
-
-Copilot に `main.bicep を全部作って` と頼むと、長大で検証しづらいコードが返ってきます。以下のように **段階的** に進めるのがおすすめです。
-
-1. **骨格を作る** — `main.bicep` のパラメータ・変数・モジュール呼び出しだけ
-2. **モジュールを 1 つずつ作る** — 監視 → Key Vault → Storage → SQL → App Service の順
-3. **パラメータファイルを作る** — dev / prod
-4. **lint と what-if で検証する**
-
-この順序は **「依存されるリソースを先に作る」** ことで、後続モジュールの参照 (`existing` や出力) を書きやすくなるためです。
-
----
-
-## 3. ステップごとのプロンプト例
-
-### 3-1. `main.bicep` の骨格
-
-````text
-先ほど設計したアーキテクチャ (App Service + SQL + Key Vault + Monitoring + Storage) を
-Bicep で実装します。まず main.bicep の骨格だけ作ってください。
-
-# 要件
-- targetScope は resourceGroup
-- パラメータ: environmentName (dev|prod), location, workloadName, sqlAdminLoginName, sqlAdminObjectId
-- 命名規則: `${workloadName}-${environmentName}-${resourceType省略形}` (例: web-dev-app)
-- tags 共通オブジェクトを定義し、全モジュールに伝播
-- モジュール呼び出し: monitoring → keyvault → storage → sql → appservice の順
-- 出力: App Service の default host name, Key Vault の名前
-
-# スタイル
-- Bicep ベストプラクティスに従う (param description 必須、@allowed / @minLength などを活用)
-- まだ各モジュールの中身は書かない (ファイルは空で OK)
+# 方針
+- 環境は `environmentName` (`dev` | `prod`) で切替 (dev=B1 / prod=P1v3)
+- リージョンは `japaneast`
+- App Service → Blob はパスワードレス (MI + RBAC)。接続文字列・アカウントキーは使わない
+- Azure / Bicep のベストプラクティスに従う (セキュア既定値、@description、@allowed など)
+- モジュール分割・命名・パラメータファイル構成は Copilot の判断に任せる
 ````
 
-### 3-2. モジュール: monitoring
+> 💡 **想定される生成物（参考）**
+> Copilot は通常、以下のような構成で出力します（ファイル名や分割粒度は多少揺れます）。
+>
+> ```text
+> demoBicep/
+> ├── main.bicep                 # エントリポイント (リソースグループスコープ)
+> ├── modules/
+> │   ├── appService.bicep       # App Service Plan + App Service + System Assigned MI
+> │   ├── storage.bicep          # Storage Account (+ Blob)
+> │   ├── roleAssignment.bicep   # MI への Storage Blob Data Contributor 付与 (別出しの場合)
+> │   └── monitoring.bicep       # Log Analytics / App Insights (Copilot の判断で追加されることあり)
+> ├── main.dev.bicepparam        # dev 用パラメータ (B1)
+> ├── main.prod.bicepparam       # prod 用パラメータ (P1v3)
+> └── README.md                  # 使い方の説明 (Copilot が一緒に生成することが多い)
+> ```
+>
+> - `roleAssignment.bicep` のように RBAC を別モジュールに切り出すのは良いプラクティス。`storage.bicep` 内に含まれていても OK。
+> - `monitoring.bicep` は本ハンズオンの必須構成ではありません。不要なら Copilot に「モニタリングは外して」と伝えれば削除してくれます。
+> - 構成が想定と大きく違う場合は、「`modules/` に分けて」「dev/prod の `.bicepparam` も作って」など会話で追加指示すれば OK。
 
-````text
-modules/monitoring.bicep を作成してください。
 
-# 内容
-- Log Analytics Workspace (PerGB2018, retention 30 日)
-- Application Insights (workspace-based, type=web)
-- 出力: workspaceId, appInsightsConnectionString, appInsightsInstrumentationKey
 
-# 要件
-- location, tags, namePrefix をパラメータ化
-- Application Insights は Log Analytics に紐づける (workspaceResourceId)
-- Bicep linter の警告が出ない形で
-````
+3. **生成された Bicep の中身を Copilot に解説してもらう**（動かす前に「何が作られたか」を理解するステップ）。
 
-### 3-3. モジュール: keyvault
+   Copilot Chat (Ask / Agent どちらでも OK) を開き、ワークスペース全体を参照させるために `#codebase` を付けて以下のように聞く。
 
-````text
-modules/keyvault.bicep を作成してください。
+   ````text
+   #codebase demoBicep/ 配下のファイル構成と、main.bicep から各モジュールがどう呼ばれているかを初心者向けに解説してください。
+   特に次の観点でお願いします。
 
-- RBAC 認可モデル (enableRbacAuthorization: true)
-- soft delete 有効 / purge protection 有効 (prod のみ true にできるようパラメータ化)
-- public network access は Allow (ハンズオン簡易化のため) ※本番は Deny + Private Endpoint が推奨とコメントで明記
-- 出力: keyVaultName, keyVaultUri
-````
+   - main.bicep の役割と、各 module 呼び出しの依存関係
+   - App Service の System Assigned Managed Identity がどこで有効化され、どう Storage Account の RBAC に渡っているか
+   - environmentName (`dev` / `prod`) によって何が切り替わるのか
+   - main.dev.bicepparam / main.prod.bicepparam の違い
+   - セキュリティ上重要な設定 (allowSharedKeyAccess, httpsOnly, minimumTlsVersion など)
+   ````
 
-### 3-4. モジュール: storage
+   > 💡 個別ファイルだけ聞きたい場合は、エディタで `demoBicep/main.bicep` を開き「このファイルを解説して」でも OK。Agent モードなら自動で関連モジュールも読みに行きます。
 
-````text
-modules/storage.bicep を作成してください。
+   解説を読んで「なぜそう書かれているか」が腹落ちしてから、次の構文チェック・what-if に進むのがおすすめ。
 
-- Standard_LRS, StorageV2, TLS 1.2 minimum
-- allowBlobPublicAccess: false
-- supportsHttpsTrafficOnly: true
-- デフォルトで blob サービスの logging / soft delete (7 日) を有効化
-- 出力: storageAccountName, blobEndpoint
-````
-
-### 3-5. モジュール: sql
-
-````text
-modules/sql.bicep を作成してください。
-
-# 要件
-- SQL Server (Azure AD / Entra ID 認証のみ有効, SQL 認証は無効)
-- administrators ブロックで Entra ID 管理者 (object id) を設定
-- SQL Database は Serverless (GP_S_Gen5_1), autoPauseDelay 60 分
-- publicNetworkAccess は Enabled (簡易化, 本番は Private Endpoint 推奨とコメント)
-- Firewall rule で Azure サービスからのアクセスを許可 (0.0.0.0)
-- 出力: sqlServerFqdn, databaseName
-````
-
-### 3-6. モジュール: appservice
-
-````text
-modules/appservice.bicep を作成してください。
-
-# 要件
-- Linux App Service Plan (B1, dev) / (P1v3, prod) をパラメータで切り替え
-- App Service (linuxFxVersion: 'NODE|20-lts')
-- System-assigned Managed Identity を有効化
-- httpsOnly: true, minTlsVersion: '1.2', ftpsState: 'Disabled'
-- App Settings:
-    - APPLICATIONINSIGHTS_CONNECTION_STRING (monitoring モジュールから受け取る)
-    - KEY_VAULT_URI (keyvault モジュールから)
-    - STORAGE_BLOB_ENDPOINT (storage モジュールから)
-    - SQL_SERVER_FQDN, SQL_DATABASE (sql モジュールから)
-- App Service の Managed Identity に対して:
-    - Key Vault 上で "Key Vault Secrets User" ロール
-    - Storage 上で "Storage Blob Data Contributor" ロール
-  を付与する roleAssignment リソースを同じモジュール内または main から作成
-
-# 注意
-- RBAC 付与は existing で参照したリソースに対して scope を設定
-````
-
-### 3-7. パラメータファイル
-
-````text
-main.bicep に対応する bicepparam を 2 つ作ってください。
-- main.dev.bicepparam:  environmentName='dev',  location='japaneast', workloadName='web', ...
-- main.prod.bicepparam: environmentName='prod', location='japaneast', workloadName='web', ...
-
-sqlAdminLoginName / sqlAdminObjectId はプレースホルダ ('<YOUR_...>') とし、
-読み手が置き換える前提でコメントを残してください。
-````
-
----
-
-## 4. Copilot の出力を受け取ったら
-
-### 4-1. 即座に `bicep build` で検証
+4. Copilot が `demoBicep/` 以下にファイルを作成したら、そのまま構文チェックを実行する。
 
 ```powershell
-az bicep build --file bicep/main.bicep
+az bicep build --file demoBicep/main.bicep
 ```
 
-linter 警告 (`BCP***`) が出たら、そのまま Copilot に貼って質問します。
+**想定される応答:**
 
-````text
-以下の警告が出ました。どう直すのがベストプラクティスですか?
-<警告内容を貼る>
-````
+- ✅ **正常時 (エラー・警告なし)**: 標準出力に**何も表示されず**、プロンプトが戻ってくるのが成功。副作用として同じディレクトリに `demoBicep/main.json` (ARM テンプレート) が生成される。
 
-### 4-2. よくある修正ポイント
+   ```powershell
+   PS> az bicep build --file demoBicep/main.bicep
+   PS>
+   PS> Test-Path demoBicep/main.json
+   True
+   ```
 
-- `listKeys()` や `listConnectionStrings()` を避け、Managed Identity + 出力の ID 情報だけを渡す
-- `secureString` を持つパラメータは `@secure()` を付与
-- `resource ... existing` を使い、モジュール間の循環参照を避ける
-- `tags` を共通変数として上から伝播させる
-- 役割 ID は `subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '<GUID>')` で指定
+- ⚠️ **警告あり (ビルド成功)**: 終了コードは 0 で `main.json` も生成されるが、Bicep linter の警告が表示される。警告文をそのまま Copilot Chat に貼って「直して」と依頼するのが手早い。
 
----
+   ```text
+   demoBicep/modules/storage.bicep(15,7) : Warning no-hardcoded-location: A resource location should not use a hard-coded string or variable value. [https://aka.ms/bicep/linter/no-hardcoded-location]
+   demoBicep/modules/appService.bicep(42,3) : Warning outputs-should-not-contain-secrets: Outputs should not contain secrets. [https://aka.ms/bicep/linter/outputs-should-not-contain-secrets]
+   ```
 
-## 5. 成果物
+- ❌ **異常時 (ビルド失敗)**: 赤字でエラーが表示され、終了コードは 1。`main.json` は生成されない (または古いものが残る)。エラーメッセージを丸ごと Copilot Chat に貼って修正を依頼する。
 
-- `bicep/main.bicep`
-- `bicep/modules/*.bicep`
-- `bicep/main.dev.bicepparam` / `bicep/main.prod.bicepparam`
-- linter 警告 0 件 / `az bicep build` 成功
+   ```text
+   demoBicep/main.bicep(23,15) : Error BCP057: The name "storageAcct" does not exist in the current context.
+   demoBicep/modules/appService.bicep(18,9) : Error BCP036: The property "sku" expected a value of type "SkuDescription" but the provided value is of type "'B1' | 'P1v3'". [https://aka.ms/bicep/core-diagnostics#BCP036]
+   ```
 
----
+   よくあるエラーコード: `BCP057` (名前未定義), `BCP036` (型不一致), `BCP104` (モジュールのパスミス), `BCP062` (循環参照) など。
 
-## 6. Track B: Azure Verified Modules (AVM) で書き直す
+5. **what-if の前提準備** — Azure にサインインし、差分確認の対象となるリソースグループを作成しておく。
 
-Track A で「自作の大変さ」を体験したら、同じ設計を **AVM** で書き直してみます。**同じ成果物が半分以下のコードで書ける** ことを体感するのが目的です。
+   ```powershell
+   # 1) Azure にサインイン (対象テナントを明示)
+   az login --tenant <your-tenant-id-or-domain>
 
-### 6-1. AVM とは (復習)
+   # 2) 対象のサブスクリプションを選択 (複数ある場合)
+   az account list --output table
+   az account set --subscription "<your-subscription-name-or-id>"
 
-- **Microsoft 公式** の Bicep / Terraform モジュール集 (👉 [README 冒頭の説明](../README.md#-azure-verified-modules-avm-とは))
-- Bicep 版は **Public Module Registry** で配布: `br/public:avm/res/<provider>/<resource>:<version>`
-- **診断設定 (diagnosticSettings)・Managed Identity・RBAC・ネットワーク ACL** といった "毎回書く定型" が標準搭載
-- セキュリティ既定値が **Microsoft 推奨値** に寄せられている (例: storage の `allowSharedKeyAccess: false`)
+   # 3) リソースグループを作成 (japaneast)
+   az group create --name rg-iac-handson-dev --location japaneast
+   ```
 
-### 6-2. 使うモジュール
+   > 💡 **ポイント**
+   > - `--tenant` にはテナント ID (GUID) または検証済みドメイン (`contoso.onmicrosoft.com` など) を指定する。ゲストユーザーや複数テナントに所属しているアカウントで**意図しないテナントにサインインするのを防ぐ**ため、明示しておくのがおすすめ。
+   > - テナント ID が分からない場合は Azure Portal 右上のアカウント > ディレクトリ切替で確認、または `az account tenant list` で一覧表示できる。
+   > - `az deployment group what-if` は**既存のリソースグループに対して**差分を計算するコマンドなので、RG は事前に作っておく必要があります (Bicep 側では作れない)。
+   > - RG 名は何でも OK (以下のコマンドでは `rg-iac-handson-dev` を例として使用)。
+   > - prod 用に別 RG を作る場合は `rg-iac-handson-prod` のように用意する。
+   > - 現在のサインイン状況は `az account show` で確認できます。
 
-今回の構成に対応する AVM モジュールはこちら。
-
-| 用途 | AVM モジュール | ドキュメント |
-|---|---|---|
-| Log Analytics | `avm/res/operational-insights/workspace` | [Link](https://github.com/Azure/bicep-registry-modules/tree/main/avm/res/operational-insights/workspace) |
-| Application Insights | `avm/res/insights/component` | [Link](https://github.com/Azure/bicep-registry-modules/tree/main/avm/res/insights/component) |
-| Key Vault | `avm/res/key-vault/vault` | [Link](https://github.com/Azure/bicep-registry-modules/tree/main/avm/res/key-vault/vault) |
-| Storage Account | `avm/res/storage/storage-account` | [Link](https://github.com/Azure/bicep-registry-modules/tree/main/avm/res/storage/storage-account) |
-| SQL Server + DB | `avm/res/sql/server` | [Link](https://github.com/Azure/bicep-registry-modules/tree/main/avm/res/sql/server) |
-| App Service Plan | `avm/res/web/serverfarm` | [Link](https://github.com/Azure/bicep-registry-modules/tree/main/avm/res/web/serverfarm) |
-| App Service (Site) | `avm/res/web/site` | [Link](https://github.com/Azure/bicep-registry-modules/tree/main/avm/res/web/site) |
-
-> 🔍 **モジュール検索**: AVM モジュールは [Bicep Registry Modules リポジトリ](https://github.com/Azure/bicep-registry-modules/tree/main/avm) で全件参照できます。バージョンは各モジュールの `version.json` を確認してください。
-
-### 6-3. サンプルプロンプト (AVM 版)
-
-Copilot Chat に以下を投げます。
-
-````text
-同じアーキテクチャを、今度は Azure Verified Modules (AVM) を使って
-sample/avm/main.bicep に書き直してください。
-
-# ルール
-- すべてのリソースは AVM モジュール (`br/public:avm/res/...`) を使う
-- モジュールバージョンは各モジュールの最新 stable (0.x 系) を使用し、コメントで明記
-- RBAC 付与は各 AVM モジュールの `roleAssignments` パラメータで設定する
-  (別途 roleAssignment リソースは書かない)
-- diagnosticSettings パラメータで Log Analytics にログを送る (App Service / Key Vault / SQL / Storage)
-- App Service の Managed Identity は `managedIdentities: { systemAssigned: true }` で有効化
-- パラメータや命名規則は Track A と揃える
-
-# 出力
-- sample/avm/main.bicep (モジュール呼び出しだけのエントリポイント)
-- sample/avm/main.dev.bicepparam
-
-# 参考にするドキュメント
-各モジュールの README:
-https://github.com/Azure/bicep-registry-modules/tree/main/avm/res/...
-````
-
-### 6-4. AVM モジュール呼び出しの基本形
-
-```bicep
-module kv 'br/public:avm/res/key-vault/vault:0.11.0' = {
-  name: 'kv-deploy'
-  params: {
-    name: kvName
-    location: location
-    tags: tags
-    enableRbacAuthorization: true
-    enablePurgeProtection: isProd
-    roleAssignments: [
-      {
-        principalId: appServicePrincipalId
-        roleDefinitionIdOrName: 'Key Vault Secrets User'
-        principalType: 'ServicePrincipal'
-      }
-    ]
-    diagnosticSettings: [
-      {
-        workspaceResourceId: logAnalyticsId
-      }
-    ]
-  }
-}
-```
-
-**ポイント**:
-- `roleDefinitionIdOrName` には **ロール名をそのまま文字列で** 書ける (GUID を探す必要なし)
-- `diagnosticSettings` を指定するだけで、そのリソースのログ/メトリクスが Log Analytics に流れる
-- セキュリティ関連プロパティ (`enableRbacAuthorization`, `publicNetworkAccess` など) の **デフォルトが安全側**
-
-### 6-5. Track A と Track B のコード量比較
-
-完成版サンプルでの実測 (概算):
-
-| 項目 | Track A (自作) | Track B (AVM) |
-|---|---|---|
-| ファイル数 | 7 (main + 5 modules + 1 param) | 2 (main + 1 param) |
-| 総行数 | 約 450 行 | 約 180 行 |
-| ロール割り当て記述 | 手動で `guid()` + `roleDefinitionId` | モジュールパラメータに名前指定するだけ |
-| 診断設定の網羅性 | 基本は自分で追加 | モジュール側で自動追加 |
-
-### 6-6. AVM で気をつけること
-
-- ⚠️ **バージョン固定**: モジュールは `:0.11.0` のように **バージョンを固定** する。`:latest` は使わない
-- ⚠️ **モジュール更新の確認**: 定期的にリリースノートを確認 (破壊的変更があることも)
-- ⚠️ **利用不可なプロパティ**: 稀にモジュールが露出していないプロパティがある。その場合は issue を立てるか、ひとまず自作モジュールに戻す
-- ⚠️ **依存関係**: AVM 同士で出力 (`.outputs.resourceId` など) を渡すときは **プロパティ名がモジュールごとに異なる** ので README を確認
-
-### 6-7. what-if 差分で Track A ↔ B の等価性を確認
-
-両方のトラックで **同じリソースグループにデプロイしたら同じ結果になるか** を what-if で比較できます。
+6. `az deployment group what-if` で差分確認（`<your-rg>` は手順 5 で作成したリソースグループ名に置換）。
 
 ```powershell
-# Track A
-az deployment group what-if -g rg-web-dev-japaneast `
-  --template-file sample/main.bicep --parameters sample/main.dev.bicepparam
-
-# Track B
-az deployment group what-if -g rg-web-dev-japaneast `
-  --template-file sample/avm/main.bicep --parameters sample/avm/main.dev.bicepparam
+az deployment group what-if -g <your-rg> --template-file demoBicep/main.bicep --parameters demoBicep/main.dev.bicepparam
 ```
 
-差分を Copilot に貼って、**「AVM 版のほうが追加で有効化しているセキュリティ機能は何か？」** を質問すると、AVM の安全側デフォルトが浮き彫りになります。
+**想定される応答 (正常時):**
+
+- ✅ **初回実行 (リソースが 1 つも無い RG に対して)** — `+ Create` がリソース数だけ並び、末尾に `Resource changes: N to create.` と出れば成功。`<will-be-computed>` はデプロイ時に決まる値 (MI の principalId など) で正常。
+
+   ```text
+   Note: As What-If is currently in preview, the result may contain false positive predictions (noise).
+
+   Resource and property changes are indicated with these symbols:
+     + Create
+
+   The deployment will update the following scope:
+
+   Scope: /subscriptions/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/resourceGroups/rg-iac-handson-dev
+
+     + Microsoft.Web/serverfarms/asp-handson-dev [2023-12-01]
+         location:                              "japaneast"
+         sku.name:                              "B1"
+         sku.tier:                              "Basic"
+
+     + Microsoft.Web/sites/app-handson-dev-abc123 [2023-12-01]
+         identity.type:                         "SystemAssigned"
+         location:                              "japaneast"
+         properties.httpsOnly:                  true
+         properties.siteConfig.minTlsVersion:   "1.2"
+         properties.siteConfig.ftpsState:       "Disabled"
+
+     + Microsoft.Storage/storageAccounts/sthandsondevabc123 [2023-05-01]
+         location:                              "japaneast"
+         properties.allowBlobPublicAccess:      false
+         properties.allowSharedKeyAccess:       false
+         properties.minimumTlsVersion:          "TLS1_2"
+         sku.name:                              "Standard_LRS"
+
+     + Microsoft.Authorization/roleAssignments/<guid> [2022-04-01]
+         properties.principalId:                "<will-be-computed>"
+         properties.roleDefinitionId:           ".../ba92f5b4-2d11-453d-a403-e96b0029c9fe"  # Storage Blob Data Contributor
+         properties.scope:                      ".../storageAccounts/sthandsondevabc123"
+
+   Resource changes: 4 to create.
+   ```
+
+   **判断基準:**
+   - 最後に `Resource changes: N to create.` と表示される (エラー行なし)
+   - 終了コード `0` (`$LASTEXITCODE` で確認可能)
+   - `+ Create` のリソース一覧がテンプレートで定義した内容と一致している
+
+- ✅ **2 回目以降 (差分なし)** — 同じ RG に同じテンプレートを再実行した場合。このまま Step 3 のデプロイに進んで OK。
+
+   ```text
+   Scope: /subscriptions/.../resourceGroups/rg-iac-handson-dev
+
+   The deployment will update the following scope, but no changes are predicted.
+
+   Resource changes: no change.
+   ```
+
+- ⚠️ **プロパティ変更 (`~ Modify`)** — dev → prod にパラメータを切り替えたときなど、変更前後が `=>` で表示される。これも正常動作。
+
+   ```text
+     ~ Microsoft.Web/serverfarms/asp-handson-dev [2023-12-01]
+       - sku.name:     "B1"     => "P1v3"
+       - sku.tier:     "Basic"  => "PremiumV3"
+
+   Resource changes: 1 to modify.
+   ```
+
+**想定される応答 (異常時):**
+
+   ```text
+   (ResourceGroupNotFound) Resource group 'rg-iac-handson-dev' could not be found.
+   ```
+   → 手順 5 の `az group create` を実行。
+
+   ```text
+   (InvalidTemplate) Deployment template validation failed: 'The value for the
+   template parameter 'environmentName' ... is not provided.'
+   ```
+   → `.bicepparam` の不足パラメータを追加、または `main.bicep` の `param` にデフォルト値を設定。
+
+   ```text
+   (InvalidResourceName) Resource name 'st-handson-dev' is invalid. The storage
+   account name must be between 3 and 24 characters and use numbers and lower-case letters only.
+   ```
+   → 命名規則違反。`uniqueString()` / `toLower()` / ハイフン除去を Copilot に依頼。
+
+   ```text
+   (AuthorizationFailed) ... does not have authorization to perform action
+   'Microsoft.Authorization/roleAssignments/write' ...
+   ```
+   → RBAC 作成には `User Access Administrator` または `Owner` が必要。権限が無ければ管理者に依頼。
+
+   ```text
+   (SubscriptionIsOverQuotaForSku) This region has quota of 0 instances for your
+   subscription. Try selecting different region or SKU.
+   ```
+   → 対象リージョンの App Service クォータが不足。別リージョン / 別 SKU で試すか、クォータ増加を申請する。**この書き換え自体も Copilot に丸投げ可能** — 例: 「上記エラーで `location` を `japanwest` に変更して、`main.bicep` と `main.dev.bicepparam` を両方更新して」と指示すれば自動で書き換えてくれる。
+
+   > 💡 エラーメッセージを丸ごと Copilot Chat に貼って「直して」と依頼すれば、大抵そのまま修正案が返ってきます。
+
+7. What-if のエラーや Bicep linter 警告が出たら、そのまま Copilot Chat に貼り付けて修正を依頼する。
+
+
+
 
 ---
 
-## 7. トラック選定ガイド
 
-実務でどちらを選ぶか迷ったら、以下を参考に。
 
-| 状況 | 推奨 |
-|---|---|
-| 初学者の学習 | Track A |
-| 社内標準として IaC を整備 | **Track B (AVM)** |
-| CAF / Landing Zone 準拠を要求される | **Track B (AVM)** |
-| AVM に存在しない特殊リソース (preview 機能等) | Track A |
-| ハイブリッド (大部分は AVM, 一部だけ自作) | **Track B をベースに一部 Track A** |
+## 早期に確認すべきポイント（自動生成後）
 
-次はこれをデプロイします。
+- App Service が `identity.type = 'SystemAssigned'` になっているか
+- Storage Account の `allowSharedKeyAccess` が `false` になっているか（パスワードレスを担保）
+- RoleAssignment が **Storage Account をスコープ** に、**App Service の `identity.principalId`** に対して `Storage Blob Data Contributor` を付与しているか
+- App Settings に接続文字列やキーが含まれていないか（含まれていたら Copilot に削除を依頼）
+- `publicNetworkAccess` はハンズオンでは `Enabled` で OK だが、本番は Private Endpoint を推奨する旨のコメントが残っているか
+
+---
+
+## よくあるトラブルと対処法
+
+- Bicep linter の警告: 警告文をそのまま Copilot に入力し、修正パッチを生成してもらう
+- 依存の循環参照: `resource existing` を使って参照を切る（Copilot にそのまま指示する）
+- 接続文字列ベースの実装が出た場合: `listKeys()` を避け、Managed Identity + RBAC に書き換えるよう指示する
+
+---
+
+## 補足: 一気に生成するメリットとリスク
+
+- メリット: 作業時間が短縮され、設計→コードのトレーサビリティが保てる
+- リスク: 自動生成は細部のセキュリティ設定や命名制約を見落とす可能性があるため、生成直後に `what-if` とレビューを必ず行うこと
+
+---
 
 👉 次へ: [Step 3: Azure にデプロイする](03-deploy.md)
